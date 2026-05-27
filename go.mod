@@ -1,4 +1,4 @@
-module pantheon-uli
+module github.com/mstrelan/pantheon-uli
 
 go 1.25.0
 
