@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -65,18 +66,19 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 type spinnerTickMsg struct{}
 
 type model struct {
-	allSites     []string
-	filtered     []string
-	filter       string
-	cursor       int
-	envIndex     int // 0=dev, 1=test, 2=live
-	state        state
-	siteEnv      string
-	resultURL    string
-	err          error
-	statusMsg    string
-	spinnerFrame int
-	windowHeight int
+	allSites      []string
+	filtered      []string
+	filter        string
+	cursor        int
+	envIndex      int // 0=dev, 1=test, 2=live
+	state         state
+	siteEnv       string
+	resultURL     string
+	err           error
+	statusMsg     string
+	spinnerFrame  int
+	windowHeight  int
+	cancelRunning context.CancelFunc
 }
 
 func initialModel() model {
@@ -154,6 +156,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case uliResultMsg:
+		if m.state != stateRunning {
+			// Stale result after cancellation; discard.
+			return m, nil
+		}
 		if msg.err != nil {
 			m.err = msg.err
 			m.state = stateDone
@@ -178,6 +184,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.state == stateDone {
 			return m, tea.Quit
+		}
+		if m.state == stateRunning {
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEsc:
+				if m.cancelRunning != nil {
+					m.cancelRunning()
+					m.cancelRunning = nil
+				}
+				m.state = stateBrowsing
+				m.siteEnv = ""
+			}
+			return m, nil
 		}
 		if m.state != stateBrowsing {
 			return m, nil
@@ -221,8 +239,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateRunning
 			m.spinnerFrame = 0
 			siteEnv := m.siteEnv
+			ctx, cancel := context.WithCancel(context.Background())
+			m.cancelRunning = cancel
 			return m, tea.Batch(
-				func() tea.Msg { return runTerminus(siteEnv, env) },
+				func() tea.Msg { return runTerminus(ctx, siteEnv, env) },
 				func() tea.Msg {
 					time.Sleep(80 * time.Millisecond)
 					return spinnerTickMsg{}
@@ -243,8 +263,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func runTerminus(siteEnv, env string) tea.Msg {
-	url, err := GetULI(siteEnv)
+func runTerminus(ctx context.Context, siteEnv, env string) tea.Msg {
+	url, err := GetULI(ctx, siteEnv)
 	if err != nil {
 		return uliResultMsg{"", err}
 	}
@@ -252,12 +272,12 @@ func runTerminus(siteEnv, env string) tea.Msg {
 	url = EnforceHTTPS(url)
 
 	if env == "live" {
-		if vanity := GetVanityDomain(siteEnv); vanity != "" {
+		if vanity := GetVanityDomain(ctx, siteEnv); vanity != "" {
 			url = SwapDomain(url, vanity)
 		}
 	}
 
-	user, pass := GetLockCreds(siteEnv)
+	user, pass := GetLockCreds(ctx, siteEnv)
 	url = InjectCreds(url, user, pass)
 
 	return uliResultMsg{url, nil}
@@ -274,6 +294,8 @@ func (m model) View() string {
 	case stateRunning:
 		frame := spinnerFrames[m.spinnerFrame]
 		b.WriteString(statusStyle.Render(fmt.Sprintf("  %s Generating login link for %s...", frame, m.siteEnv)))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  esc: cancel"))
 		return b.String()
 
 	case stateDone:
