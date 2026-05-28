@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -10,10 +11,13 @@ import (
 var urlRe = regexp.MustCompile(`https?://\S+`)
 
 // GetULI runs terminus remote:drush <site.env> -- uli and returns the raw URL.
-func GetULI(siteEnv string) (string, error) {
-	cmd := exec.Command("terminus", "remote:drush", siteEnv, "--", "uli")
+func GetULI(ctx context.Context, siteEnv string) (string, error) {
+	cmd := exec.CommandContext(ctx, "terminus", "remote:drush", siteEnv, "--", "uli")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", fmt.Errorf("drush uli failed: %s", strings.TrimSpace(string(out)))
 	}
 	url := urlRe.FindString(string(out))
@@ -24,8 +28,8 @@ func GetULI(siteEnv string) (string, error) {
 }
 
 // GetVanityDomain returns the first non-pantheon domain for a site.env, or "" if none.
-func GetVanityDomain(siteEnv string) string {
-	cmd := exec.Command("terminus", "domain:list", siteEnv, "--format=list", "--fields=id")
+func GetVanityDomain(ctx context.Context, siteEnv string) string {
+	cmd := exec.CommandContext(ctx, "terminus", "domain:list", siteEnv, "--format=list", "--fields=id")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -44,9 +48,9 @@ func GetVanityDomain(siteEnv string) string {
 }
 
 // GetLockCreds returns (username, password) for HTTP basic auth on a locked site.
-func GetLockCreds(siteEnv string) (string, string) {
-	userCmd := exec.Command("terminus", "lock:info", siteEnv, "--field=username")
-	passCmd := exec.Command("terminus", "lock:info", siteEnv, "--field=password")
+func GetLockCreds(ctx context.Context, siteEnv string) (string, string) {
+	userCmd := exec.CommandContext(ctx, "terminus", "lock:info", siteEnv, "--field=username")
+	passCmd := exec.CommandContext(ctx, "terminus", "lock:info", siteEnv, "--field=password")
 
 	userOut, err1 := userCmd.Output()
 	passOut, err2 := passCmd.Output()
