@@ -204,8 +204,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 
-		case tea.KeyTab, tea.KeyShiftTab:
-			if msg.Type == tea.KeyShiftTab {
+		case tea.KeyTab, tea.KeyShiftTab, tea.KeyLeft, tea.KeyRight:
+			if msg.Type == tea.KeyShiftTab || msg.Type == tea.KeyLeft {
 				m.envIndex = (m.envIndex + 2) % 3
 			} else {
 				m.envIndex = (m.envIndex + 1) % 3
@@ -334,7 +334,7 @@ func (m model) View() string {
 		}
 
 		// Help line
-		b.WriteString(dimStyle.Render("  tab: env  enter: go  ctrl+r: refresh  esc: quit"))
+		b.WriteString(dimStyle.Render("  tab/arrows: env  enter: go  ctrl+r: refresh  esc: quit"))
 
 		if m.statusMsg != "" {
 			b.WriteString("\n")
