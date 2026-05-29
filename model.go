@@ -12,13 +12,24 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+
 func openBrowser(url string) {
+	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		exec.Command("open", url).Start()
+		cmd = exec.Command("open", url)
 	case "linux":
-		exec.Command("xdg-open", url).Start()
+		cmd = exec.Command("xdg-open", url)
+	default:
+		return
 	}
+	// Prevent the child process from inheriting stdin — on Linux, fork+exec
+	// briefly shares the raw terminal fd with the parent, which can cause
+	// bubbletea's cancelreader to misread and exit the TUI.
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Start() //nolint:errcheck
 }
 
 // --- Styles ---
@@ -167,9 +178,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.resultURL = msg.url
 		m.state = stateDone
-		// Open in browser then quit
-		openBrowser(msg.url)
-		return m, tea.Quit
+		url := msg.url
+		return m, func() tea.Msg {
+			openBrowser(url)
+			return nil
+		}
 
 	case spinnerTickMsg:
 		if m.state == stateRunning {
@@ -183,7 +196,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.state == stateDone {
-			return m, tea.Quit
+			if m.err != nil {
+				// Error case: any key quits.
+				return m, tea.Quit
+			}
+			// Success case: Esc goes back to browsing; Ctrl+C quits.
+			switch msg.Type {
+			case tea.KeyEsc:
+				m.state = stateBrowsing
+				m.resultURL = ""
+				m.siteEnv = ""
+				return m, nil
+			case tea.KeyCtrlC:
+				return m, tea.Quit
+			}
+			return m, nil
 		}
 		if m.state == stateRunning {
 			switch msg.Type {
@@ -301,8 +328,12 @@ func (m model) View() string {
 	case stateDone:
 		if m.err != nil {
 			b.WriteString(errorStyle.Render("Error: " + m.err.Error()))
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("  press any key to quit"))
 		} else {
-			b.WriteString(resultStyle.Render(m.resultURL))
+			b.WriteString(resultStyle.Render("  " + m.resultURL))
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("  esc: back  ctrl+c: exit"))
 		}
 		return b.String()
 
