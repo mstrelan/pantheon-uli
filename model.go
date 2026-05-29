@@ -271,13 +271,25 @@ func runTerminus(ctx context.Context, siteEnv, env string) tea.Msg {
 
 	url = EnforceHTTPS(url)
 
-	if env == "live" {
-		if vanity := GetVanityDomain(ctx, siteEnv); vanity != "" {
-			url = SwapDomain(url, vanity)
+	var vanity, user, pass string
+
+	if cachedVanity, cachedUser, cachedPass, ok := LoadEnvMeta(siteEnv); ok {
+		// Use cached per-environment metadata — no terminus calls needed.
+		vanity = cachedVanity
+		user = cachedUser
+		pass = cachedPass
+	} else {
+		// Fetch from terminus and persist for future runs.
+		if env == "live" {
+			vanity = GetVanityDomain(ctx, siteEnv)
 		}
+		user, pass = GetLockCreds(ctx, siteEnv)
+		_ = SaveEnvMeta(siteEnv, vanity, user, pass)
 	}
 
-	user, pass := GetLockCreds(ctx, siteEnv)
+	if vanity != "" {
+		url = SwapDomain(url, vanity)
+	}
 	url = InjectCreds(url, user, pass)
 
 	return uliResultMsg{url, nil}
