@@ -58,6 +58,10 @@ type uliResultMsg struct {
 	url string
 	err error
 }
+type openURLMsg struct {
+	url string
+	err error
+}
 
 // --- Model ---
 
@@ -84,6 +88,7 @@ type model struct {
 	envIndex      int // 0=dev, 1=test, 2=live
 	state         state
 	siteEnv       string
+	spinnerLabel  string // message shown next to spinner in stateRunning
 	resultURL     string
 	err           error
 	statusMsg     string
@@ -184,6 +189,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return nil
 		}
 
+	case openURLMsg:
+		if m.state != stateRunning {
+			// Stale result after cancellation; discard.
+			return m, nil
+		}
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateDone
+			return m, nil
+		}
+		m.state = stateBrowsing
+		url := msg.url
+		return m, func() tea.Msg {
+			openBrowser(url)
+			return nil
+		}
+
 	case spinnerTickMsg:
 		if m.state == stateRunning {
 			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
@@ -262,11 +284,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			site := m.filtered[m.cursor]
 			env := envs[m.envIndex]
-			m.siteEnv = site + "." + env
+			siteEnv := site + "." + env
+			if msg.Alt {
+				// Alt+Enter: open site without generating a ULI.
+				// Fast path: cache is warm — open immediately with no terminus calls.
+				if vanity, user, pass, ok := LoadEnvMeta(siteEnv); ok {
+					url := buildBaseURL(site, env, vanity, user, pass)
+					return m, func() tea.Msg {
+						openBrowser(url)
+						return nil
+					}
+				}
+			// Slow path: cache is cold — fetch vanity domain and lock credentials
+			// from terminus, then open the browser.
+			m.siteEnv = siteEnv
 			m.state = stateRunning
 			m.spinnerFrame = 0
-			siteEnv := m.siteEnv
+			m.spinnerLabel = "Fetching HTTP auth credentials"
 			ctx, cancel := context.WithCancel(context.Background())
+			m.cancelRunning = cancel
+			return m, tea.Batch(
+				func() tea.Msg { return fetchAndBuildURL(ctx, siteEnv, env) },
+				func() tea.Msg {
+					time.Sleep(80 * time.Millisecond)
+					return spinnerTickMsg{}
+				},
+			)
+		}
+		m.siteEnv = siteEnv
+		m.state = stateRunning
+		m.spinnerFrame = 0
+		m.spinnerLabel = "Generating login link"
+		ctx, cancel := context.WithCancel(context.Background())
 			m.cancelRunning = cancel
 			return m, tea.Batch(
 				func() tea.Msg { return runTerminus(ctx, siteEnv, env) },
@@ -322,6 +371,40 @@ func runTerminus(ctx context.Context, siteEnv, env string) tea.Msg {
 	return uliResultMsg{url, nil}
 }
 
+// siteURL returns the display URL for a site+env — the plain Pantheon URL with
+// the vanity domain applied if cached, but never including credentials.
+func siteURL(site, env string) string {
+	url := "https://" + env + "-" + site + ".pantheonsite.io/"
+	vanity, _, _, ok := LoadEnvMeta(site + "." + env)
+	if ok && vanity != "" {
+		url = SwapDomain(url, vanity)
+	}
+	return url
+}
+
+// buildBaseURL constructs the site base URL using cached metadata.
+// It does not make any terminus calls; call fetchAndBuildURL for the cold-cache path.
+func buildBaseURL(site, env, vanity, user, pass string) string {
+	url := "https://" + env + "-" + site + ".pantheonsite.io/"
+	if vanity != "" {
+		url = SwapDomain(url, vanity)
+	}
+	return InjectCreds(url, user, pass)
+}
+
+// fetchAndBuildURL fetches vanity domain and lock credentials from terminus,
+// persists them in the cache, and returns an openURLMsg with the resolved URL.
+func fetchAndBuildURL(ctx context.Context, siteEnv, env string) tea.Msg {
+	var vanity, user, pass string
+	if env == "live" {
+		vanity = GetVanityDomain(ctx, siteEnv)
+	}
+	user, pass = GetLockCreds(ctx, siteEnv)
+	_ = SaveEnvMeta(siteEnv, vanity, user, pass)
+	site := strings.TrimSuffix(siteEnv, "."+env)
+	return openURLMsg{url: buildBaseURL(site, env, vanity, user, pass)}
+}
+
 func (m model) View() string {
 	var b strings.Builder
 
@@ -332,7 +415,7 @@ func (m model) View() string {
 
 	case stateRunning:
 		frame := spinnerFrames[m.spinnerFrame]
-		b.WriteString(statusStyle.Render(fmt.Sprintf("  %s Generating login link for %s...", frame, m.siteEnv)))
+		b.WriteString(statusStyle.Render(fmt.Sprintf("  %s %s for %s...", frame, m.spinnerLabel, m.siteEnv)))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("  esc: cancel"))
 		return b.String()
@@ -399,7 +482,13 @@ func (m model) View() string {
 		}
 
 		// Help line
-		b.WriteString(dimStyle.Render("  tab/arrows: env  enter: go  ctrl+r: refresh  esc: quit"))
+		b.WriteString(dimStyle.Render("  tab/arrows: env  enter: login  alt+enter: open  ctrl+r: refresh  esc: quit"))
+
+		// URL preview for the selected site+env (no credentials)
+		if len(m.filtered) > 0 {
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("  " + siteURL(m.filtered[m.cursor], envs[m.envIndex])))
+		}
 
 		if m.statusMsg != "" {
 			b.WriteString("\n")
