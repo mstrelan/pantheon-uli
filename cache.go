@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-const cacheTTL = 30 * 24 * time.Hour  // 30 days — site list TTL
-const envMetaTTL = 24 * time.Hour     // 24 hours — per-environment metadata TTL
+const cacheTTL    = 30 * 24 * time.Hour // 30 days — site list TTL
+const envMetaTTL  = 30 * 24 * time.Hour // 30 days — per-environment metadata TTL
 
 // EnvMeta holds cached per-environment metadata.
 type EnvMeta struct {

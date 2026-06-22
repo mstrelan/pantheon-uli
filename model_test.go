@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -82,5 +83,131 @@ func TestErrorCaseAnyKeyQuits(t *testing.T) {
 	msg := cmd()
 	if _, ok := msg.(tea.QuitMsg); !ok {
 		t.Fatalf("expected tea.QuitMsg from any key on error screen, got %T", msg)
+	}
+}
+
+// --- Alt+Enter ---
+
+func TestAltEnterWarmCacheOpensImmediately(t *testing.T) {
+	overrideCacheDir(t)
+	writeCacheRaw(t, siteCache{Sites: []string{"site-a"}, RefreshedAt: time.Now()})
+	if err := SaveEnvMeta("site-a.dev", "", "user", "pass"); err != nil {
+		t.Fatalf("SaveEnvMeta: %v", err)
+	}
+
+	m := initialModel()
+	m.state = stateBrowsing
+	m.allSites = []string{"site-a"}
+	m.applyFilter()
+
+	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	m2 := result.(model)
+
+	// Cache was warm: must stay in stateBrowsing and fire openBrowser immediately.
+	if m2.state != stateBrowsing {
+		t.Fatalf("expected stateBrowsing (warm cache), got %v", m2.state)
+	}
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd (openBrowser), got nil")
+	}
+	if msg := cmd(); msg != nil {
+		if _, ok := msg.(tea.QuitMsg); ok {
+			t.Fatal("alt+enter warm path returned tea.Quit")
+		}
+	}
+}
+
+func TestAltEnterColdCacheTransitionsToStateRunning(t *testing.T) {
+	overrideCacheDir(t) // empty cache
+
+	m := initialModel()
+	m.state = stateBrowsing
+	m.allSites = []string{"site-a"}
+	m.applyFilter()
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	m2 := result.(model)
+
+	// Cache was cold: must transition to stateRunning to fetch from terminus.
+	if m2.state != stateRunning {
+		t.Fatalf("expected stateRunning (cold cache), got %v", m2.state)
+	}
+}
+
+func TestAltEnterOnEmptyListIsNoOp(t *testing.T) {
+	m := initialModel()
+	m.state = stateBrowsing
+	m.allSites = []string{}
+	m.applyFilter()
+
+	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	m2 := result.(model)
+
+	if m2.state != stateBrowsing {
+		t.Fatalf("expected stateBrowsing after alt+enter on empty list, got %v", m2.state)
+	}
+	if cmd != nil {
+		t.Fatal("expected nil cmd from alt+enter on empty list, got non-nil")
+	}
+}
+
+func TestOpenURLMsgReturnsToStateBrowsing(t *testing.T) {
+	m := initialModel()
+	m.state = stateRunning
+
+	result, cmd := m.Update(openURLMsg{url: "https://example.com/"})
+	m2 := result.(model)
+
+	if m2.state != stateBrowsing {
+		t.Fatalf("expected stateBrowsing after openURLMsg, got %v", m2.state)
+	}
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd (openBrowser)")
+	}
+	if msg := cmd(); msg != nil {
+		if _, ok := msg.(tea.QuitMsg); ok {
+			t.Fatal("openURLMsg handler returned tea.Quit")
+		}
+	}
+}
+
+func TestEnterStillTransitionsToStateRunning(t *testing.T) {
+	m := initialModel()
+	m.state = stateBrowsing
+	m.allSites = []string{"site-a"}
+	m.applyFilter()
+	m.cursor = 0
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2 := result.(model)
+
+	if m2.state != stateRunning {
+		t.Fatalf("expected stateRunning after enter, got %v", m2.state)
+	}
+}
+
+// --- buildBaseURL ---
+
+func TestBuildBaseURLNoCreds(t *testing.T) {
+	got := buildBaseURL("my-site", "dev", "", "", "")
+	want := "https://dev-my-site.pantheonsite.io/"
+	if got != want {
+		t.Fatalf("buildBaseURL: got %q, want %q", got, want)
+	}
+}
+
+func TestBuildBaseURLWithVanityAndCreds(t *testing.T) {
+	got := buildBaseURL("my-site", "live", "mysite.com", "admin", "s3cr3t")
+	want := "https://admin:s3cr3t@mysite.com/"
+	if got != want {
+		t.Fatalf("buildBaseURL: got %q, want %q", got, want)
+	}
+}
+
+func TestBuildBaseURLCredsNoVanity(t *testing.T) {
+	got := buildBaseURL("my-site", "dev", "", "devuser", "devpass")
+	want := "https://devuser:devpass@dev-my-site.pantheonsite.io/"
+	if got != want {
+		t.Fatalf("buildBaseURL: got %q, want %q", got, want)
 	}
 }
